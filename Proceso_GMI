@@ -1,0 +1,2292 @@
+/*Consolidacion base de datos GMI*/
+
+/*Librerias con insumos a ocupar
+run;
+proc datasets lib=work nolist kill;*/
+libname car "/salud/BI_038_11_SF/Insumos_Cierre";
+libname b "/salud/BI_038_13_ST/BASES";
+libname d "/datos/DATOS/BI_038_06_SF/LoB/FecMin";
+libname target "/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/TARGET";
+libname aseg_ind "/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL";
+libname sini1 "/salud/BI_038_11_SF/HIST_SINI/paso_int";
+libname pr "/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/PRUEBAS";
+
+/*Paso 2 importacion de data sets provenientes de insumos para consolidar informacion de mes*/
+/*Data de carter para la union*/
+data carternuevo;
+	set car.t_cartergmx20_202508_nuevo;
+	where vigente= 1 and vig_per = 1;
+	polizaraiz=substr(poliza, 1, 6);
+	nombrecomp=compress(nombrecomp);
+run;
+
+/*data de carter tot para la union*/
+data cartertot;
+	set car.t_cartergmx20_tot_202508;
+	where vigente= 1 and vig_per = 1;
+	polizaraiz=substr(poliza, 1, 6);
+run;
+
+/*data de pcehist para la union*/
+data pcehist;
+	set car.t_pce_hist_202508;
+	poliza=compress(poliza);
+run;
+
+/*data de agentes para la union*/
+data catalogoagentes;
+	set car.t_agentes_divs_202508;
+	agente=compress(agente);
+run;
+
+/*data de fechamin para la union*/
+data fechamin;
+	set d.cmn202508;
+	nombrecomp=compress(nombrecomp);
+run;
+
+/*Data de base complementaria de deducibles y coaseguro para la union*/
+proc import 
+
+	datafile="/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/CATALOGO/DANI_AGO.dbf"
+	dbms= dbf
+	out= work.basetr
+	replace;
+run;
+
+/*Niveles de riesgo pricing*/
+proc import 
+
+	datafile="/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/PRUEBAS/FlexPlus/flexplus202507.xlsx"
+	dbms= xlsx
+	out= flp1
+	replace;
+run;
+
+proc import 
+
+	datafile="/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/PRUEBAS/Plus/Plus202507.xlsx"
+	dbms= xlsx
+	out= plus1
+	replace;
+run;
+
+/*descarga insumo de primas*/
+proc import 
+    datafile="/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/CATALOGO/DescargasDelChavitoago25.xlsx"
+    out=prim2018
+    dbms=xlsx
+    replace;
+    getnames=yes;
+run;
+
+data primas18;
+    set prim2018;
+    /* Convertir FecIniVig a texto */
+    FecIniVig_text = put(FecIniVig, 8.);
+    /* Extraer los primeros cuatro caracteres */
+    anio_vig = substr(FecIniVig_text, 1, 4);
+run;
+
+/*Insumo completar coaseguros y deducibles*/
+data bd_comp;
+	set basetr;
+	añocierre=substr(put(CIERRE, 8.),1,6);
+	llave=compress(poliza);
+	llave2=compress(polizaraiz||fec_desde);
+	coaseguro=compress(coaseguro);
+	cont=1;
+run;
+
+/*Input nueva oferta*/
+proc import 
+
+	datafile="/salud/BI_038_13_ST/BASES/NuevaOferta.xlsx"
+	dbms= xlsx
+	out= nvaoferta
+	replace;
+run;
+
+data nuevaof;
+set nvaoferta;
+llave=compress(poliza);
+where MARCA="GOB";
+run;
+
+/*Input Nuevo Renovado*/
+proc import 
+
+	datafile="/salud/BI_038_11_SF/ASEGURADOS_INDIVIDUAL/CATALOGO/GMI_NvaRen_Tipo_Cartera_202508.txt"
+		dbms= DLM
+out= catalogoNR
+	replace;
+	delimiter='|';
+run;
+data catalogoNueRen;
+set catalogoNR;
+añocierre= substr(put(fec_corte, 8.), 1, 6);
+run;
+
+/*Dataset con siniestros*/
+data histsini2124;
+	set sini1.hs202507;
+	llavecruce1=compress(polvig3_emi||sex_afe||fec_nacafe||afectado);
+	llavecruce1_1=compress(polizaraiz||inivig3_emi||sex_afe||fec_nacafe||afectado);
+	llavecruce2=compress(polvig3_emi||sex_afe||fec_nacafe);
+	llavecruce2_2=compress(polizaraiz||inivig3_emi||sex_afe||fec_nacafe);
+	llavecruce3=compress(polvig3_emi||afectado);
+	llavecruce3_3=compress(polizaraiz||inivig3_emi||afectado);
+	llavecruce4=compress(polvig3_emi||fec_nacafe);
+	llavecruce4_4=compress(polizaraiz||inivig3_emi||fec_nacafe);
+	llavecruce5=compress(polvig3_emi||sex_afe);
+	llavecruce5_5=compress(polizaraiz||inivig3_emi||sex_afe);
+run;
+
+/*Data vendido historico*/
+data vendido;
+	set b.vh_11_2507;
+	where csramo="GMI";
+	llave=compress(poliza||plan||agente);
+run;
+
+/*Data catalogo de CP*/
+data acum_cp_act;
+	set target.cat_cpact;
+run;
+
+/*Data catalogo Planes*/
+data catalogoplanes;
+	set target.catalogoplanes;
+run;
+
+/*Data catalogo de Equivalencias flex*/
+data  equivflex;
+	set target.equivalenciasflex;
+run;
+
+/*Data catalogo de Equivalencias noflex*/
+data equivnoflex;
+	set target.equivalenciasnoflex;
+run;
+
+/*Paso 3: Tabla con informacion preparada de mes a cargar en la base*/
+proc sql;
+	create table mes as 
+		select distinct 2025 as añocierre, 
+			a.poliza, 
+			substr(a.poliza, 1, 6) as polizaraiz,
+			a.csramo, 
+			a.contaseg, 
+			b.por_pma,
+			a.sexo, 
+			a.fnac, 
+			a.id_aseg,
+			a.fant,
+			a.falt,
+			a.fec_desde, 
+			a.fec_hasta,
+			int((input(a.fec_desde, yymmdd8.) - input (a.falt, yymmdd8.))/365) as duralt,
+			int((input(a.fec_desde, yymmdd8.) - input (f.min_falt, yymmdd8.))/365) as duraltmin,
+		case
+			when calculated duraltmin = 0 then "000"
+			when calculated duraltmin = 1 then "001"
+			when calculated duraltmin = 2 then "002"
+			when calculated duraltmin >= 3 then "3+"
+			else "999"
+		end 
+	as duraltminagr,
+		case
+			when calculated duralt = 0 then "000"
+			when calculated duralt = 1 then "001"
+			when calculated duralt = 2 then "002"
+			when calculated duralt >= 3 then "3+"
+			else "999"
+		end 
+	as duraltagr,
+		int((input(a.fec_desde, yymmdd8.) - input (a.fant, yymmdd8.))/365) as durant,
+	case
+		when calculated durant = 0 then "000"
+		when calculated durant = 1 then "001"
+		when calculated durant = 2 then "002"
+		when calculated durant >= 3 then "3+"
+		else "1000"
+	end 
+as durantagr,
+	int((input(a.fec_desde, yymmdd8.) - input (a.fnac, yymmdd8.))/365) as edad,
+case 
+	when calculated edad>=0 and calculated edad <= 1 then "00-01"
+	when calculated edad>=2 and calculated edad <= 29 then "02-29"
+	when calculated edad>=30 and calculated edad <= 45 then "30-45"
+	when calculated edad>=46 and calculated edad <= 54 then "46-54"
+	when calculated edad>=55 and calculated edad <= 64 then "55-64"
+	when calculated edad>= 65 then "65+"
+	else "error"
+end 
+as rangoedad,
+a.tcar, 
+a.deducible, 
+a.coaseguro, 
+a.agente, 
+a.zona_flex, 
+a.plan, 
+a.nh, 
+a.dist, 
+a.ded_cgar, 
+a.gbg, 
+a.cobertura,
+a.nombre,
+a.appaterno,
+a.apmaterno,
+a.tabulador,
+b.suma_aseg,
+b.cp,
+d.estado,
+d.municipio,
+d.zona,                                                          
+e.nombre_plan,                              
+f.min_falt,
+f.min_fant,
+f.rfc, 
+g.nom_emp,
+g.num_emp
+from carternuevo a /*insumo principal de union, carter*/
+	inner join cartertot b on/*join con insumo carter tot*/
+	a.poliza=b.poliza and 
+	a.polizaraiz=b.polizaraiz and
+	a.contaseg=b.contaseg
+	left join pcehist g on /*join con catalogo de pce hist*/
+	a.poliza=g.poliza 
+	left join fechamin f on/*join con catalogo de fecha minima*/
+	compress(a.poliza)=compress(f.poliza) and
+	a.contaseg=f.contaseg and
+	a.fnac=f.fnac and
+	a.nombrecomp=f.nombrecomp 
+	left join acum_cp_act d on /*join con catalogo de codigos postales*/
+	compress(b.cp)=compress(d.cp)
+	left join catalogoplanes e on /*join con catalogo de planes*/
+	input(a.plan, best32.)=input(e.id_plan, best32.);
+quit;
+
+data tablapaso;
+	set mes;
+
+	if plan="28" then
+		tcar="FRONTING";
+run;
+data tablapaso2;
+	set tablapaso;
+
+if DURALTMIN = 0 then estatus = 1;/*Nuevo*/
+    else if DURALTMIN > 0 then estatus = 0;/*Renovado*/
+run;
+
+/*********************************************************************************************************************************************************************/
+
+/*Pegar campo de prima por asegurado*/
+data consultabdgmi2;
+set tablapaso2;
+anio_vig= substr(put(fec_desde, 8.), 1, 4);
+llaveprim=compress(poliza||anio_vig||appaterno||apmaterno||nombre);	
+llavecom=compress(añocierre||poliza||polizaraiz||contaseg||id_aseg||fnac||nombre|| appaterno||apmaterno);
+run;
+data primas182;
+set primas18;
+llaveprim=compress(poliza||anio_vig||ApellidoPaterno||ApellidoMaterno||NombreAseg);
+run;
+
+proc sql;
+create table unionprim as select a.*,
+case when a.llaveprim=b.llaveprim then b.primaasegurado else "" end as prima_aseg
+from consultabdgmi2 a
+left join primas182 b on 
+a.llaveprim=b.llaveprim;
+quit;
+/***************************/
+data unionprim18;
+set unionprim;
+llave2prim=compress(poliza||anio_vig||contaseg);		
+run;
+data primas182_2;
+set primas18;
+llave2prim=compress(poliza||anio_vig||NumAseg);
+run;
+proc sql;
+create table unionprim2_18 as select a.*,
+case when a.llave2prim=b.llave2prim and prima_aseg=""  then b.primaasegurado else "" end as prima_aseg2
+from unionprim18 a
+left join primas182_2 b on 
+a.llave2prim=b.llave2prim;
+quit;
+
+proc sql;
+	create table unionprim18f as select distinct
+		a.*, b.*,
+		coalesce(a.prima_aseg, b.prima_aseg2) as prima_x_aseg
+	from unionprim18 a
+		full join unionprim2_18 b on 
+			a.llavecom=b.llavecom;
+quit;
+
+proc sort data=consultabdgmi2;
+	by llavecom;
+run;
+
+proc sort data=unionprim18f nodupkey;
+	by llavecom;
+run;
+
+data final;
+	merge consultabdgmi2 (in=a) unionprim18f (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+data limpiar2;
+set final;
+drop llave2prim	prima_aseg	llaveprim	prima_aseg2;
+llavefinalpr=compress(añocierre||poliza||rfc);
+run;
+data basepasofpr;
+set aseg_ind.GMi_tablero_analisis;
+llavefinalpr=compress(añocierre||poliza||rfc);
+run;
+
+proc sql;
+create table crucefinpr as select  distinct a.*,
+case when a.llavefinalpr=b.llavefinalpr and a.prima_x_aseg= "" then b.prima_x_aseg else a.prima_x_aseg end as prima_x_aseg2
+from limpiar2 a 
+left join 
+basepasofpr b on 
+a.llavefinalpr=b.llavefinalpr;
+quit;
+
+data tablaprfinal1;
+    set crucefinpr;
+    drop prima_x_aseg;
+run;
+
+data tablaprfinal2;
+    set tablaprfinal1;
+    rename prima_x_aseg2=prima_x_aseg;
+run;
+
+
+/*Campos suma de poliza y total de asegurados*/
+data consultabd22;
+set tablaprfinal2;
+llave=compress(poliza||anio_vig);		
+run;
+ 
+PROC SQL;
+   CREATE TABLE WORK.QUERY_FOR_CONSULTABD2 AS 
+   SELECT DISTINCT t1.poliza, 
+          t1.anio_vig, 
+		  llave,
+          /* Convertir a numérico y sumar con decimales */
+          SUM(INPUT(t1.prima_x_aseg, 8.2)) AS sum_prim_pol FORMAT=12.2
+      FROM WORK.consultabd22 t1
+      GROUP BY t1.poliza,
+               t1.anio_vig,llave;
+QUIT;
+
+proc sql;
+create table sum_prim as select a.*,
+case when a.llave=b.llave then b.sum_prim_pol else . end as suma_prim_pol
+from consultabd22 a 
+left join QUERY_FOR_CONSULTABD2 b on 
+a.llave=b.llave;
+quit;
+
+proc sort data=consultabd22;
+	by llavecom;
+run;
+
+proc sort data=sum_prim nodupkey;
+	by llavecom;
+run;
+
+data finalf;
+	merge consultabd22 (in=a) sum_prim (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+
+proc sort data=finalf out=orden;
+	by  descending añocierre;
+run;
+
+proc sql;
+create table base_contar as select *,
+count (*) as total_aseg_poliza
+from orden
+group by poliza,anio_vig;
+quit;
+
+proc sort data=base_contar out=orden2;
+	by  descending añocierre;
+run;
+
+/*Nombre tabulador y nivel hospitalario*/
+
+data crucescatnh;
+    set orden2;
+
+    if strip(nh) = "045" then nombre_nh = "(045) No flex";
+    else if strip(nh) = "090" then nombre_nh = "(090) No flex";
+    else if strip(nh) = "180" then nombre_nh = "(180) No flex";
+    else if strip(nh) = "270" then nombre_nh = "(270) No flex";
+    else if strip(nh) = "360" then nombre_nh = "(360) No flex";
+    else if strip(nh) = "1" then nombre_nh = "Diamante";
+    else if strip(nh) = "2" then nombre_nh = "Esmeralda";
+    else if strip(nh) = "3" then nombre_nh = "Zafiro";
+    else if strip(nh) = "4" then nombre_nh = "Integral";
+    else if strip(nh) = "INT" then nombre_nh = "Internacional";
+    else nombre_nh = nh; /* Esta línea se ejecutará si ninguna de las condiciones anteriores se cumple */
+run;
+
+data crucescattab;
+    set crucescatnh;
+    drop llave;
+    if strip(tabulador) = "1" then nombre_tab = "Roble";
+    else if strip(tabulador) = "2" then nombre_tab = "Fresno";
+    else if strip(tabulador) = "3" then nombre_tab = "Cedro";
+    else if strip(tabulador) = "4" then nombre_tab = "Caoba";
+    else if strip(tabulador) = "5" then nombre_tab = "Olivo";
+    else if strip(tabulador) = "6" then nombre_tab = "Roble+50";
+    else if strip(tabulador) = "7" then nombre_tab = "Roble+100";
+    else nombre_tab = tabulador; /* Esta línea se ejecutará si ninguna de las condiciones anteriores se cumple */
+run;
+
+/*Pegar campo GOB*/
+proc sql;
+create table crucegob as select  a.*,
+case when a.poliza=b.poliza then b.MARCA else "" end as GOB
+from crucescattab a
+left join nuevaof b on 
+a.poliza=b.poliza;
+quit;
+
+proc sort data=crucescattab;
+	by llavecom;
+run;
+
+proc sort data=crucegob nodupkey;
+	by llavecom;
+run;
+
+data base_GOB;
+	merge crucescattab (in=a) crucegob (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+proc sql;
+create table sdadsd as select *,
+case when GOB="GOB" then 1 else 0 end as GOB_F
+from base_GOB;
+quit;
+
+proc sort data=sdadsd nodupkey out=finalbasee;
+	by llavecom;
+run;
+
+
+/*Pegar campo Nuevo Renovado*/
+proc sql;
+create table crucenvoren as select distinct a.*,
+case when a.poliza=b.poliza then b.NvoRen else "" end as NvoRen
+from finalbasee a
+left join catalogoNueRen b on 
+a.poliza=b.poliza;
+quit;
+
+proc sort data=finalbasee;
+	by llavecom;
+run;
+
+proc sort data=crucenvoren nodupkey;
+	by llavecom;
+run;
+
+data base_nuere;
+	merge finalbasee (in=a) crucenvoren (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*********************************************************************************************************************************************************************/
+
+/*Paso 4: Creacion de tabla con informacion de mes, creacion de llaves para cruce con Siniestros*/
+data bdconsini;
+	set base_nuere;
+	drop GOB;
+	llave=compress(añocierre||poliza||polizaraiz||contaseg||id_aseg||fnac||nombre|| appaterno||apmaterno);
+	llavecruce1=compress(poliza||sexo||fnac||appaterno||apmaterno||nombre);
+	llavecruce1_1=compress(polizaraiz||fec_desde||sexo||fnac||appaterno||apmaterno||nombre);
+	llavecruce2=compress(poliza||sexo||fnac);
+	llavecruce2_2=compress(polizaraiz||fec_desde||sexo||fnac);
+	llavecruce3=compress(poliza||appaterno||apmaterno||nombre);
+	llavecruce3_3=compress(polizaraiz||fec_desde||appaterno||apmaterno||nombre);
+	llavecruce4=compress(poliza||fnac);
+	llavecruce4_4=compress(polizaraiz||fec_desde||fnac);
+	llavecruce5=compress(poliza||sexo);
+	llavecruce5_5=compress(polizaraiz||fec_desde||sexo);
+run;
+
+/*Extraccion de informacion para calcular siniestralidad*/
+proc sql;
+	create table sini2124 as 
+		select polvig3_emi,
+			polizaraiz,
+			(sum(reserva)) format=14.2 as reserva, 
+			sex_afe, 
+			fec_nacafe, 
+			afectado, 
+			csramo,
+			llavecruce1,
+			llavecruce1_1,
+			llavecruce2,
+			llavecruce2_2,
+			llavecruce3,
+			llavecruce3_3,
+			llavecruce4,
+			llavecruce4_4,
+			llavecruce5,
+			llavecruce5_5
+		from histsini2124 
+			group by polizaraiz,polvig3_emi,
+				sex_afe,
+				fec_nacafe,
+				afectado,
+				csramo,
+				llavecruce1,
+				llavecruce1_1,
+				llavecruce2,
+				llavecruce2_2,
+				llavecruce3,
+				llavecruce3_3,
+				llavecruce4,
+				llavecruce4_4,
+				llavecruce5,
+				llavecruce5_5;
+quit;
+
+/*Tabla con informacion lista para cruce*/
+data bd_gmi1;
+	set sini2124;
+	where csramo="GMI";/*Validacion que solo sean registros GMI*/
+run;
+
+/*Creacion de tabla paso para sumarizar nuevamente campo reserva*/
+proc sql;
+	create table bd_gmisini as 
+		select polvig3_emi, 
+			polizaraiz,
+			(sum(reserva)) format=14.2 as reserva, 
+			sex_afe, 
+			fec_nacafe, 
+			afectado, 
+			csramo,
+			llavecruce1,
+			llavecruce1_1,
+			llavecruce2,
+			llavecruce2_2,
+			llavecruce3,
+			llavecruce3_3,
+			llavecruce4,
+			llavecruce4_4,
+			llavecruce5,
+			llavecruce5_5
+		from bd_gmi1
+			group by polvig3_emi,
+				sex_afe,
+				fec_nacafe,
+				afectado,
+				csramo,
+				llavecruce1,
+				llavecruce1_1,
+				llavecruce2,
+				llavecruce2_2,
+				llavecruce3,
+				llavecruce3_3,
+				llavecruce4,
+				llavecruce4_4,
+				llavecruce5,
+				llavecruce5_5;
+quit;
+
+/*Tabla para excluir registros que sean igual o menor a 0*/
+data sinnegativos;
+	set bd_gmisini;
+	where reserva >0;
+run;
+
+data sinnegativos2;
+	set sinnegativos;
+run;
+
+proc sql;
+	create table baseconsini1 as select distinct a.*,
+		case 
+			when a.llavecruce1=b.llavecruce1 then "Si" 
+			else " " 
+		end 
+	as con_siniestro1
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce1=b.llavecruce1;
+quit;
+
+proc sql;
+	create table baseconsini1_1 as select distinct a.*,
+		case 
+			when a.llavecruce1_1=b.llavecruce1_1 then "Si" 
+			else " " 
+		end 
+	as con_siniestro1_1 
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce1_1=b.llavecruce1_1;
+quit;
+
+proc sql;
+	create table baseconsini2 as select distinct a.*,
+		case 
+			when a.llavecruce2=b.llavecruce2 then "Si" 
+			else " " 
+		end 
+	as con_siniestro2
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce2=b.llavecruce2;
+quit;
+
+proc sql;
+	create table baseconsini2_2 as select distinct a.*,
+		case 
+			when a.llavecruce2_2=b.llavecruce2_2 then "Si" 
+			else " " 
+		end 
+	as con_siniestro2_2
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce2_2=b.llavecruce2_2;
+quit;
+
+proc sql;
+	create table baseconsini3 as select distinct a.*,
+		case 
+			when a.llavecruce3=b.llavecruce3 then "Si" 
+			else " " 
+		end 
+	as con_siniestro3
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce3=b.llavecruce3;
+quit;
+
+proc sql;
+	create table baseconsini3_3 as select distinct a.*,
+		case 
+			when a.llavecruce3_3=b.llavecruce3_3 then "Si" 
+			else " " 
+		end 
+	as con_siniestro3_3
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce3_3=b.llavecruce3_3;
+quit;
+
+proc sql;
+	create table baseconsini4 as select distinct a.*,
+		case 
+			when a.llavecruce4=b.llavecruce4 then "Si" 
+			else " " 
+		end 
+	as con_siniestro4
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce4=b.llavecruce4;
+quit;
+
+proc sql;
+	create table baseconsini4_4 as select distinct a.*,
+		case 
+			when a.llavecruce4_4=b.llavecruce4_4 then "Si" 
+			else " " 
+		end 
+	as con_siniestro4_4
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce4_4=b.llavecruce4_4;
+quit;
+
+proc sql;
+	create table baseconsini5 as select distinct a.*,
+		case 
+			when a.llavecruce5=b.llavecruce5 then "Si" 
+			else " " 
+		end 
+	as con_siniestro5
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce5=b.llavecruce5;
+quit;
+
+proc sql;
+	create table baseconsini5_5 as select distinct a.*,
+		case 
+			when a.llavecruce5_5=b.llavecruce5_5 then "Si" 
+			else " " 
+		end 
+	as con_siniestro5_5
+		from bdconsini a
+			left join 
+				sinnegativos2 b on 
+				a.llavecruce5_5=b.llavecruce5_5;
+quit;
+
+/*1*/
+proc sql;
+	create table gmisini as select distinct
+		a.*, b.*,
+		coalesce(a.con_siniestro1, b.con_siniestro1_1) as con_s
+	from baseconsini1 a
+		full join baseconsini1_1 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmisini2 as select distinct
+		a.*, b.*,
+		coalesce(a.con_siniestro2, b.con_siniestro2_2) as con_si
+	from baseconsini2 a
+		full join baseconsini2_2 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmisini3 as select distinct
+		a.*, b.*,
+		coalesce(a.con_siniestro3, b.con_siniestro3_3) as con_sin
+	from baseconsini3 a
+		full join baseconsini3_3 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmisini4 as select distinct
+		a.*, b.*,
+		coalesce(a.con_siniestro4, b.con_siniestro4_4) as con_sini
+	from baseconsini4 a
+		full join baseconsini4_4 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmisini5 as select distinct
+		a.*, b.*,
+		coalesce(a.con_siniestro5, b.con_siniestro5_5) as con_sinie
+	from baseconsini5 a
+		full join baseconsini5_5 b on 
+			a.llave=b.llave;
+quit;
+
+/*2*/
+proc sql;
+	create table gmifin1 as select distinct
+		a.*, b.*,
+		coalesce(a.con_s, b.con_si) as sini1
+	from gmisini a
+		full join gmisini2 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmifin2 as select distinct
+		a.*, b.*,
+		coalesce(a.con_sin, b.con_sini) as sini2
+	from gmisini3 a
+		full join gmisini4 b on 
+			a.llave=b.llave;
+quit;
+
+/*3*/
+proc sql;
+	create table gmifinal as select distinct
+		a.*, b.*,
+		coalesce(a.sini1, b.sini2) as con_sinief
+	from gmifin1 a
+		full join gmifin2 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmifinal2 as select distinct
+		a.*, b.*,
+		coalesce(a.con_s, b.con_sinie) as con_siniestro
+	from gmifinal a
+		full join gmisini5 b on 
+			a.llave=b.llave;
+quit;
+
+proc sort data=bdconsini;
+	by llave;
+run;
+
+proc sort data=gmifinal2 nodupkey;
+	by llave;
+run;
+
+data final;
+	merge bdconsini (in=a) gmifinal2 (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+data resulfinal;
+	set final;
+
+	if con_siniestro= '' then
+		con_siniestro='No';
+	drop con_siniestro1;
+	drop con_siniestro1_1;
+	drop con_siniestro2;
+	drop con_siniestro2_2;
+	drop con_siniestro3;
+	drop con_siniestro3_3;
+	drop con_siniestro4;
+	drop con_siniestro4_4;
+	drop con_siniestro5;
+	drop con_siniestro5_5;
+	drop con_s;
+	drop con_si;
+	drop con_sin;
+	drop con_sini;
+	drop con_sinie;
+	drop sini1;
+	drop sini2;
+	drop con_sinief;
+	drop llave;
+	drop llavecruce1;
+	drop llavecruce1_1;
+	drop llavecruce2;
+	drop llavecruce2_2;
+	drop llavecruce3;
+	drop llavecruce3_3;
+	drop llavecruce4;
+	drop llavecruce4_4;
+	drop llavecruce5;
+	drop llavecruce5_5;
+run;
+
+/*Paso5: Union con campos de vendido historico*/
+/*Tabla mes y creacion de llaves para la union*/
+data bdcon;
+	set resulfinal;
+	llave=compress(poliza||plan||agente);
+	llave2=compress(cats(añocierre,poliza,polizaraiz,contaseg,id_aseg,fnac,nombre, appaterno,apmaterno));
+run;
+
+/*Tabla con data de vendido historico previamente cargado*/
+data vend;
+	set vendido;
+	where csramo="GMI";/*validacion de solo asegurados gmi*/
+	llave=compress(poliza||plan||agente);
+run;
+
+/*Join de ambas tablas para pegar campos de vendido*/
+proc sql;
+	create table nuevoscamposvend as select distinct a.*,
+		b.tipo_mov,
+		b.sistema,
+		b.forma_pago,
+		b.nom_for_pago,
+		b.conducto_cobro
+	from bdcon a 
+		left join 
+			vend b on 
+			a.poliza=b.poliza;
+quit;
+
+/*Tabla excluyendo registros nulos*/
+data sinulos;
+	set nuevoscamposvend;
+run;
+
+/*Preparacion de tablas para union mediante merge*/
+proc sort data=bdcon;
+	by llave2;
+run;
+
+proc sort data=sinulos nodupkey;/*Sin registros duplicados*/
+	by llave2;
+run;
+
+/*Merge uniendo ambas tablas*/
+data base_actualizada;
+	merge bdcon (in=a) sinulos (in=b);
+	by llave2;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*Tabla con resultado final eliminando llaves previamente creadas*/
+data final;
+	set base_actualizada;
+	drop llave;
+	drop llave2;
+run;
+
+/*Paso 6:Union para pegar campos de catalogo de agentes*/
+/*Creacion de tabla de mes preparando llave y limpiando campo para cruce*/
+data basegmi;
+	set final;
+	llave=compress(poliza||polizaraiz||rfc);
+	agente=compress(agente);
+run;
+
+/*Join para pegar campos de catalogo de agentes a tabla de mes*/
+proc sql;
+	create table nuevoscampos as select distinct a.*,
+		case 
+			when a.agente=b.agente then b.promotor 
+			else "" 
+		end 
+	as promotor_ag,
+		case 
+			when a.agente=b.agente then b.ccosto 
+			else "" 
+		end 
+	as ccosto_ag,
+		case 
+			when a.agente=b.agente then b.nccosto 
+			else "" 
+		end 
+	as nccosto_ag,
+		case 
+			when a.agente=b.agente then b.zona 
+			else "" 
+		end 
+	as zona_ag,
+		case 
+			when a.agente=b.agente then b.oficina 
+			else "" 
+		end 
+	as oficina_ag,
+		case 
+			when a.agente=b.agente then b.cve_terri 
+			else "" 
+		end 
+	as cve_terri_ag,
+		case 
+			when a.agente=b.agente then b.cve_zona 
+			else "" 
+		end 
+	as cve_zona_ag,
+		case 
+			when a.agente=b.agente then b.cve_ofisub 
+			else "" 
+		end 
+	as cve_ofisub_ag,
+		case 
+			when a.agente=b.agente then b.zona_susc 
+			else "" 
+		end 
+	as zona_susc_ag,
+		case 
+			when a.agente=b.agente then b.nomagente 
+			else "" 
+		end 
+	as nomagente_ag,
+		case 
+			when a.agente=b.agente then b.nompromot 
+			else "" 
+		end 
+	as nompromot_ag,
+		case 
+			when a.agente=b.agente then b.territorio 
+			else "" 
+		end 
+	as territorio_ag,
+		case 
+			when a.agente=b.agente then b.canal 
+			else "" 
+		end 
+	as canal_ag
+		from basegmi a 
+			left join catalogoagentes b on 
+				a.agente=b.agente;
+quit;
+
+/*Tabla con resultado final y depuracion de campos llave*/
+data nuevaf;
+	set nuevoscampos;
+	drop llave;
+run;
+
+/*Paso 7 Limpieza y homologacion de deducibles y coaseguro*/
+data limpieza1;
+	set nuevaf;
+	llave=compress(añocierre||poliza||polizaraiz||contaseg||id_aseg||fnac||nombre|| appaterno||apmaterno);
+run;
+
+/*Correccion de campo deducible para productos 27 y 02*/
+data limpieza2;
+	set limpieza1;
+	length n_deducible $12;
+
+	/* definir los mapeos para los planes 02 y 27 */
+	if plan="02" then
+		do;
+			select (deducible);
+				when ("0") n_deducible = "0";
+				when ("10000") n_deducible = "10000";
+				when ("1000000") n_deducible = "10000";
+				when ("10000000") n_deducible = "100000";
+				when ("1100000") n_deducible = "11000";
+				when ("11500") n_deducible = "11500";
+				when ("115000") n_deducible = "115000";
+				when ("1150000") n_deducible = "11500";
+				when ("11500000") n_deducible = "115000";
+				when ("1200000") n_deducible = "12000";
+				when ("1210000") n_deducible = "12100";
+				when ("122000") n_deducible = "122000";
+				when ("13000") n_deducible = "13000";
+				when ("1320000") n_deducible = "13200";
+				when ("1400000") n_deducible = "14000";
+				when ("1430000") n_deducible = "14300";
+				when ("1500000") n_deducible = "15000";
+				when ("1540000") n_deducible = "15400";
+				when ("1600000") n_deducible = "16000";
+				when ("16500") n_deducible = "16500";
+				when ("165000") n_deducible = "165000";
+				when ("1650000") n_deducible = "16500";
+				when ("17000") n_deducible = "17000";
+				when ("1700000") n_deducible = "17000";
+				when ("1760000") n_deducible = "17600";
+				when ("1870000") n_deducible = "18700";
+				when ("1900000") n_deducible = "19000";
+				when ("1980000") n_deducible = "19800";
+				when ("2000000") n_deducible = "20000";
+				when ("2090000") n_deducible = "20900";
+				when ("2100000") n_deducible = "20900";
+				when ("2200000") n_deducible = "22000";
+				when ("22500") n_deducible = "22500";
+				when ("2250000") n_deducible = "22500";
+				when ("2400000") n_deducible = "24000";
+				when ("24500") n_deducible = "24500";
+				when ("25000") n_deducible = "25000";
+				when ("2500000") n_deducible = "25000";
+				when ("2750000") n_deducible = "27500";
+				when ("28500") n_deducible = "28500";
+				when ("2850000") n_deducible = "28500";
+				when ("3000000") n_deducible = "30000";
+				when ("32500") n_deducible = "32500";
+				when ("3300000") n_deducible = "33000";
+				when ("35000") n_deducible = "35000";
+				when ("3500000") n_deducible = "35000";
+				when ("35500") n_deducible = "35500";
+				when ("3550000") n_deducible = "35500";
+				when ("40000") n_deducible = "40000";
+				when ("4000000") n_deducible = "40000";
+				when ("41000") n_deducible = "41000";
+				when ("50000") n_deducible = "50000";
+				when ("5000000") n_deducible = "50000";
+				when ("51000") n_deducible = "51000";
+				when ("55000") n_deducible = "55000";
+				when ("550000") n_deducible = "55000";
+				when ("5500000") n_deducible = "55000";
+				when ("57500") n_deducible = "57500";
+				when ("6000") n_deducible = "6000";
+				when ("600000") n_deducible = "6000";
+				when ("650000") n_deducible = "55000";
+				when ("660000") n_deducible = "6600";
+				when ("700000") n_deducible = "7000";
+				when ("75000") n_deducible = "75000";
+				when ("7500000") n_deducible = "75000";
+				when ("770000") n_deducible = "7700";
+				when ("80000") n_deducible = "80000";
+				when ("85000") n_deducible = "85000";
+				when ("8500000") n_deducible = "85000";
+				when ("880000") n_deducible = "85000";
+				when ("9000") n_deducible = "9000";
+				when ("900000") n_deducible = "9000";
+				when ("990000") n_deducible = "9000";
+				otherwise n_deducible = deducible;
+			end;
+		end;
+	else if plan="27" then
+		do;
+			select (deducible);
+				when ("0") n_deducible = "0";
+				when ("10000") n_deducible = "10000";
+				when ("1000000") n_deducible = "10000";
+				when ("11000") n_deducible = "11000";
+				when ("11500") n_deducible = "11500";
+				when ("1150000") n_deducible = "11500";
+				when ("11500000") n_deducible = "115000";
+				when ("120000") n_deducible = "120000";
+				when ("130000") n_deducible = "130000";
+				when ("13000000") n_deducible = "130000";
+				when ("14000") n_deducible = "14000";
+				when ("1400000") n_deducible = "1400000";
+				when ("145000") n_deducible = "145000";
+				when ("16000") n_deducible = "16000";
+				when ("162000") n_deducible = "162000";
+				when ("17000") n_deducible = "17000";
+				when ("1700000") n_deducible = "1700000";
+				when ("19000") n_deducible = "19000";
+				when ("1900000") n_deducible = "19000";
+				when ("21000") n_deducible = "21000";
+				when ("24000") n_deducible = "24000";
+				when ("25000") n_deducible = "25000";
+				when ("2500000") n_deducible = "25000";
+				when ("28000") n_deducible = "28000";
+				when ("2800000") n_deducible = "28000";
+				when ("31000") n_deducible = "31000";
+				when ("35000") n_deducible = "35000";
+				when ("3500000") n_deducible = "35000";
+				when ("40000") n_deducible = "40000";
+				when ("4000000") n_deducible = "40000";
+				when ("44000") n_deducible = "44000";
+				when ("50000") n_deducible = "50000";
+				when ("55000") n_deducible = "55000";
+				when ("5500000") n_deducible = "55000";
+				when ("62000") n_deducible = "62000";
+				when ("6200000") n_deducible = "62000";
+				when ("64000") n_deducible = "64000";
+				when ("68000") n_deducible = "68000";
+				when ("77000") n_deducible = "77000";
+				when ("9000") n_deducible = "9000";
+				when ("900000") n_deducible = "9000";
+				otherwise n_deducible = deducible;
+			end;
+		end;
+	else n_deducible = deducible;
+run;
+
+/*correccion de campo coaseguro*/
+data limpiezaco;
+	set limpieza2;
+	length n_coaseguro $8;
+
+	/* usar select para manejar las asignaciones de n_coaseguro */
+	select (coaseguro);
+		when ("0") n_coaseguro = "0.00";
+		when ("0.0") n_coaseguro = "0.00";
+		when ("0.00") n_coaseguro = "0.00";
+		when ("10") n_coaseguro = "10.00";
+		when ("10.0") n_coaseguro = "10.00";
+		when ("10.00") n_coaseguro = "10.00";
+		when ("15") n_coaseguro = "15.00";
+		when ("15.0") n_coaseguro = "15.00";
+		when ("15.00") n_coaseguro = "15.00";
+		when ("20") n_coaseguro = "20.00";
+		when ("20.0") n_coaseguro = "20.00";
+		when ("20.00") n_coaseguro = "20.00";
+		when ("25") n_coaseguro = "25.00";
+		when ("25.0") n_coaseguro = "25.00";
+		when ("25.00") n_coaseguro = "25.00";
+		when ("30") n_coaseguro = "30.00";
+		when ("30.0") n_coaseguro = "30.00";
+		when ("30.00") n_coaseguro = "30.00";
+		when ("5") n_coaseguro = "5.00";
+		when ("5.0") n_coaseguro = "5.00";
+		when ("5.00") n_coaseguro = "5.00";
+		otherwise n_coaseguro = coaseguro;
+	end;
+run;
+
+/*Creacion de data set con tabla resultado de correccion de campos*/
+data nuevabd;
+	set limpiezaco;
+run;
+
+/*Tabla con el ultimo deducible encontrado por poliza*/
+proc sql;
+	create table no_vacios as select distinct poliza,n_deducible
+		from nuevabd 
+			where n_deducible ne ""
+				group by poliza
+					having añocierre=max(añocierre);
+quit;
+
+/*Tabla con los registros con el deducible vacio*/
+data vacios;
+	set nuevabd;
+	where n_deducible="";
+run;
+
+/*Tabla para llenar el deducible de los registros vacios con el ultimo encontrado anteriormente*/
+proc sql;
+	create table campolleno as select distinct a.*,
+		case 
+			when a.poliza=b.poliza then b.n_deducible 
+			else ""
+		end 
+	as n_deducible2
+		from vacios a 
+			left join no_vacios b on
+				a.poliza=b.poliza;
+quit;
+
+/*unificacion de tabla resultado con tabla original*/
+proc sql;
+	create table unif as select distinct
+		a.*, b.*,
+		coalesce(a.n_deducible, b.n_deducible2) as nue_deducible
+	from nuevabd a
+		full join campolleno b on 
+			a.llave=b.llave;
+quit;
+
+/*tabla eliminando campos creados para unificacion*/
+data condeducible;
+	set unif;
+	drop n_deducible n_deducible2;
+run;
+
+/*creacion de data set con tabla resultado de correccion de deducible*/
+data nuevabd2;
+	set condeducible;
+run;
+
+/*tabla con el ultimo coaseguro encontrado por poliza*/
+proc sql;
+	create table no_vacios2 as select distinct poliza,n_coaseguro
+		from nuevabd2 
+			where n_coaseguro ne ""
+				group by poliza
+					having añocierre=max(añocierre);
+quit;
+
+/*tabla con los registros con el coaseguro vacio*/
+data vacios2;
+	set nuevabd2;
+	where n_coaseguro="";
+run;
+
+/*tabla para llenar el coaseguro de los registros vacios con el ultimo encontrado anteriormente*/
+proc sql;
+	create table campolleno2 as select distinct a.*,
+		case 
+			when a.poliza=b.poliza then b.n_coaseguro 
+			else ""
+		end 
+	as n_coaseguro2
+		from vacios2 a 
+			left join no_vacios2 b on
+				a.poliza=b.poliza;
+quit;
+
+/*unificacion de tabla resultado con tabla original*/
+proc sql;
+	create table unif2 as select distinct
+		a.*, b.*,
+		coalesce(a.n_coaseguro, b.n_coaseguro2) as nue_coaseguro
+	from nuevabd2 a
+		full join campolleno2 b on 
+			a.llave=b.llave;
+quit;
+
+/*tabla eliminando campos creados para unificacion*/
+data concoaseguro;
+	set unif2;
+	drop n_coaseguro n_coaseguro2;
+run;
+
+/****************************************************************************/
+data base1;
+	set concoaseguro;
+	año_inivig=substr(fec_desde, 1,4);
+	llave=compress(poliza);
+	llave2=compress(polizaraiz||fec_desde);
+	llavecom=compress(añocierre||poliza||polizaraiz||contaseg||id_aseg||fnac||nombre|| appaterno||apmaterno);
+run;
+
+data base2;
+	set base1;
+	where nue_deducible = "";
+run;
+
+proc sql;
+	create table updatededu as select distinct a.*,
+		case 
+			when a.llave2=b.llave2 then b.deducible  
+		end 
+	as deducible2
+		from 
+			base2 a 
+		left join 
+			bd_comp b on 
+			a.llave2=b.llave2;
+quit;
+
+proc sql;
+	create table unif3 as select distinct
+		a.*, b.*,
+		coalesce(a.nue_deducible, b.deducible2) as dedufinal
+	from base1 a
+		full join updatededu b on 
+			a.llavecom=b.llavecom;
+quit;
+
+data deduciblef;
+	set unif3;
+	where dedufinal ne '';
+run;
+
+proc sort data=base1;
+	by llavecom;
+run;
+
+proc sort data=deduciblef nodupkey;
+	by llavecom;
+run;
+
+data base_actualizada;
+	merge base1 (in=a) deduciblef (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/***************************************************************************/
+data basecoa;
+	set base_actualizada;
+run;
+
+data basecoa2;
+	set basecoa;
+	where nue_coaseguro = "";
+run;
+
+proc sql;
+	create table updatecoa as select distinct a.*,
+		case 
+			when a.llave2=b.llave2 then b.coaseguro  
+		end 
+	as coaseguro2
+		from 
+			basecoa2 a 
+		left join 
+			bd_comp b on 
+			a.llave2=b.llave2;
+quit;
+
+proc sql;
+	create table unif4 as select distinct
+		a.*, b.*,
+		coalesce(a.nue_coaseguro, b.coaseguro2) as coasegurofinal
+	from basecoa a
+		full join updatecoa b on 
+			a.llavecom=b.llavecom;
+quit;
+
+data coasegurof;
+	set unif4;
+	where coasegurofinal ne '';
+run;
+
+proc sort data=basecoa;
+	by llavecom;
+run;
+
+proc sort data=coasegurof nodupkey;
+	by llavecom;
+run;
+
+data base_actualizada2;
+	merge basecoa (in=a) coasegurof (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+data penultimaf;
+	set base_actualizada2;
+	drop coaseguro2 deducible2 llave2 llave año_inivig 
+		nue_coaseguro nue_deducible;
+run;
+
+data limpiezafinal;
+	set penultimaf;
+	length deducible_f $12;
+
+	if plan = "02" then
+		do;
+			select (dedufinal);
+				when ("0") deducible_f = "0";
+				when ("10000") deducible_f = "10000";
+				when ("1000000") deducible_f = "10000";
+				when ("10000000") deducible_f = "100000";
+				when ("1100000") deducible_f = "11000";
+				when ("11500") deducible_f = "11500";
+				when ("115000") deducible_f = "115000";
+				when ("1150000") deducible_f = "11500";
+				when ("11500000") deducible_f = "115000";
+				when ("1200000") deducible_f = "12000";
+				when ("1210000") deducible_f = "12100";
+				when ("122000") deducible_f = "122000";
+				when ("13000") deducible_f = "13000";
+				when ("1320000") deducible_f = "13200";
+				when ("1400000") deducible_f = "14000";
+				when ("1430000") deducible_f = "14300";
+				when ("1500000") deducible_f = "15000";
+				when ("1540000") deducible_f = "15400";
+				when ("1600000") deducible_f = "16000";
+				when ("16500") deducible_f = "16500";
+				when ("165000") deducible_f = "165000";
+				when ("1650000") deducible_f = "16500";
+				when ("17000") deducible_f = "17000";
+				when ("1700000") deducible_f = "17000";
+				when ("1760000") deducible_f = "17600";
+				when ("1870000") deducible_f = "18700";
+				when ("1900000") deducible_f = "19000";
+				when ("1980000") deducible_f = "19800";
+				when ("2000000") deducible_f = "20000";
+				when ("2090000") deducible_f = "20900";
+				when ("2100000") deducible_f = "20900";
+				when ("2200000") deducible_f = "22000";
+				when ("22500") deducible_f = "22500";
+				when ("2250000") deducible_f = "22500";
+				when ("2400000") deducible_f = "24000";
+				when ("24500") deducible_f = "24500";
+				when ("25000") deducible_f = "25000";
+				when ("2500000") deducible_f = "25000";
+				when ("2750000") deducible_f = "27500";
+				when ("28500") deducible_f = "28500";
+				when ("2850000") deducible_f = "28500";
+				when ("3000000") deducible_f = "30000";
+				when ("32500") deducible_f = "32500";
+				when ("3300000") deducible_f = "33000";
+				when ("35000") deducible_f = "35000";
+				when ("3500000") deducible_f = "35000";
+				when ("35500") deducible_f = "35500";
+				when ("3550000") deducible_f = "35500";
+				when ("40000") deducible_f = "40000";
+				when ("4000000") deducible_f = "40000";
+				when ("41000") deducible_f = "41000";
+				when ("50000") deducible_f = "50000";
+				when ("5000000") deducible_f = "50000";
+				when ("51000") deducible_f = "51000";
+				when ("55000") deducible_f = "55000";
+				when ("550000") deducible_f = "55000";
+				when ("5500000") deducible_f = "55000";
+				when ("57500") deducible_f = "57500";
+				when ("6000") deducible_f = "6000";
+				when ("600000") deducible_f = "6000";
+				when ("650000") deducible_f = "55000";
+				when ("660000") deducible_f = "6600";
+				when ("700000") deducible_f = "7000";
+				when ("75000") deducible_f = "75000";
+				when ("7500000") deducible_f = "75000";
+				when ("770000") deducible_f = "7700";
+				when ("80000") deducible_f = "80000";
+				when ("85000") deducible_f = "85000";
+				when ("8500000") deducible_f = "85000";
+				when ("880000") deducible_f = "85000";
+				when ("9000") deducible_f = "9000";
+				when ("900000") deducible_f = "9000";
+				when ("990000") deducible_f = "9000";
+				otherwise deducible_f = dedufinal;
+			end;
+		end;
+	else if plan = "27" then
+		do;
+			select (dedufinal);
+				when ("0") deducible_f = "0";
+				when ("10000") deducible_f = "10000";
+				when ("1000000") deducible_f = "10000";
+				when ("11000") deducible_f = "11000";
+				when ("11500") deducible_f = "11500";
+				when ("1150000") deducible_f = "11500";
+				when ("11500000") deducible_f = "115000";
+				when ("120000") deducible_f = "120000";
+				when ("130000") deducible_f = "130000";
+				when ("13000000") deducible_f = "130000";
+				when ("14000") deducible_f = "14000";
+				when ("1400000") deducible_f = "1400000";
+				when ("145000") deducible_f = "145000";
+				when ("16000") deducible_f = "16000";
+				when ("162000") deducible_f = "162000";
+				when ("17000") deducible_f = "17000";
+				when ("1700000") deducible_f = "1700000";
+				when ("19000") deducible_f = "19000";
+				when ("1900000") deducible_f = "19000";
+				when ("21000") deducible_f = "21000";
+				when ("24000") deducible_f = "24000";
+				when ("25000") deducible_f = "25000";
+				when ("2500000") deducible_f = "25000";
+				when ("28000") deducible_f = "28000";
+				when ("2800000") deducible_f = "28000";
+				when ("31000") deducible_f = "31000";
+				when ("35000") deducible_f = "35000";
+				when ("3500000") deducible_f = "35000";
+				when ("40000") deducible_f = "40000";
+				when ("4000000") deducible_f = "40000";
+				when ("44000") deducible_f = "44000";
+				when ("50000") deducible_f = "50000";
+				when ("55000") deducible_f = "55000";
+				when ("5500000") deducible_f = "55000";
+				when ("62000") deducible_f = "62000";
+				when ("6200000") deducible_f = "62000";
+				when ("64000") deducible_f = "64000";
+				when ("68000") deducible_f = "68000";
+				when ("77000") deducible_f = "77000";
+				when ("9000") deducible_f = "9000";
+				when ("900000") deducible_f = "9000";
+				otherwise deducible_f = dedufinal;
+			end;
+		end;
+	else deducible_f = dedufinal;
+run;
+
+data limpiezafinal2;
+	set limpiezafinal;
+	length coaseguro_f $8;
+
+	/* usar select para manejar las asignaciones de coaseguro_f */
+	select (coasegurofinal);
+		when ("0") coaseguro_f = "0.00";
+		when ("0.0") coaseguro_f = "0.00";
+		when ("0.00") coaseguro_f = "0.00";
+		when ("10") coaseguro_f = "10.00";
+		when ("10.0") coaseguro_f = "10.00";
+		when ("10.00") coaseguro_f = "10.00";
+		when ("15") coaseguro_f = "15.00";
+		when ("15.0") coaseguro_f = "15.00";
+		when ("15.00") coaseguro_f = "15.00";
+		when ("20") coaseguro_f = "20.00";
+		when ("20.0") coaseguro_f = "20.00";
+		when ("20.00") coaseguro_f = "20.00";
+		when ("25") coaseguro_f = "25.00";
+		when ("25.0") coaseguro_f = "25.00";
+		when ("25.00") coaseguro_f = "25.00";
+		when ("30") coaseguro_f = "30.00";
+		when ("30.0") coaseguro_f = "30.00";
+		when ("30.00") coaseguro_f = "30.00";
+		when ("5") coaseguro_f = "5.00";
+		when ("5.0") coaseguro_f = "5.00";
+		when ("5.00") coaseguro_f = "5.00";
+		otherwise coaseguro_f = coasegurofinal;
+	end;
+run;
+
+data bdlimpia;
+	set limpiezafinal2;
+	drop coasegurofinal dedufinal;
+run;
+
+data bdlimpia;
+	set limpiezafinal2;
+	drop COASEGUROFINAL DEDUFINAL;
+run;
+
+/*Paso #: Pegar equivalencias de deducible. suma asegurada y coaseguro 2025 al mes actual*/
+
+data campodedu;
+	set  bdlimpia;
+	año_ini_vig=substr(FEC_DESDE, 1,4);/*Creacion de campo fecha inicio de vigencia*/
+	DEDUCIBLE_F=compress(DEDUCIBLE_F);/*Limpieza de campos para garantizar la union*/
+	SUMA_ASEG=compress(suma_aseg);
+	COASEGURO_F=compress(COASEGURO_F);
+run;
+
+/*Pegando equivalencias de deducible*/
+
+data equivalencias;
+set campodedu;
+if año_ini_vig="2025" and plan="27" and deducible_f="19000" then EQUIV_DEDU="19000";
+else if año_ini_vig="2025" and plan="27" and deducible_f="25500" then EQUIV_DEDU="25500";
+else if año_ini_vig="2025" and plan="27" and deducible_f="37000" then EQUIV_DEDU="37000";
+else if año_ini_vig="2025" and plan="27" and deducible_f="53000" then EQUIV_DEDU="53000";
+else if año_ini_vig="2025" and plan="27" and deducible_f="68000" then EQUIV_DEDU="68000";
+else if año_ini_vig="2025" and plan="27" and deducible_f="82000" then EQUIV_DEDU="82000";
+else if año_ini_vig="2025" and plan="27" and deducible_f="127500" then EQUIV_DEDU="127500";
+else if año_ini_vig="2025" and plan="27" and deducible_f="172000" then EQUIV_DEDU="172000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="18000" then EQUIV_DEDU="19000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="24000" then EQUIV_DEDU="25500";
+else if año_ini_vig="2024" and plan="27" and deducible_f="35000" then EQUIV_DEDU="37000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="50000" then EQUIV_DEDU="53000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="64000" then EQUIV_DEDU="68000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="77000" then EQUIV_DEDU="82000";
+else if año_ini_vig="2024" and plan="27" and deducible_f="120000" then EQUIV_DEDU="127500";
+else if año_ini_vig="2024" and plan="27" and deducible_f="162000" then EQUIV_DEDU="172000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="17500" then EQUIV_DEDU="17500";
+else if año_ini_vig="2025" and plan="02" and deducible_f="22000" then EQUIV_DEDU="22000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="33000" then EQUIV_DEDU="33000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="43500" then EQUIV_DEDU="43500";
+else if año_ini_vig="2025" and plan="02" and deducible_f="55000" then EQUIV_DEDU="55000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="68000" then EQUIV_DEDU="68000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="77500" then EQUIV_DEDU="77500";
+else if año_ini_vig="2025" and plan="02" and deducible_f="106500" then EQUIV_DEDU="106500";
+else if año_ini_vig="2025" and plan="02" and deducible_f="165000" then EQUIV_DEDU="165000";
+else if año_ini_vig="2025" and plan="02" and deducible_f="223000" then EQUIV_DEDU="223000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="13000" then EQUIV_DEDU="17500";
+else if año_ini_vig="2024" and plan="02" and deducible_f="16500" then EQUIV_DEDU="22000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="24500" then EQUIV_DEDU="33000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="32500" then EQUIV_DEDU="43500";
+else if año_ini_vig="2024" and plan="02" and deducible_f="41000" then EQUIV_DEDU="55000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="51000" then EQUIV_DEDU="68000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="57500" then EQUIV_DEDU="77500";
+else if año_ini_vig="2024" and plan="02" and deducible_f="80000" then EQUIV_DEDU="106500";
+else if año_ini_vig="2024" and plan="02" and deducible_f="122000" then EQUIV_DEDU="165000";
+else if año_ini_vig="2024" and plan="02" and deducible_f="165000" then EQUIV_DEDU="223000";
+else EQUIV_DEDU = deducible_f;
+/******************************************************************************************************************/
+
+/*************************************************************************************************************/
+if año_ini_vig="2025" and plan="27" and suma_aseg="700000" then EQUIV_SUMA_ASEG="700000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="1300000" then EQUIV_SUMA_ASEG="1300000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="2600000" then EQUIV_SUMA_ASEG="2600000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="4250000" then EQUIV_SUMA_ASEG="4250000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="6000000" then EQUIV_SUMA_ASEG="6000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="8500000" then EQUIV_SUMA_ASEG="8500000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="15000000" then EQUIV_SUMA_ASEG="15000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="22000000" then EQUIV_SUMA_ASEG="22000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="35000000" then EQUIV_SUMA_ASEG="35000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="65000000" then EQUIV_SUMA_ASEG="65000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="90000000" then EQUIV_SUMA_ASEG="90000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="125000000" then EQUIV_SUMA_ASEG="125000000";
+else if año_ini_vig="2025" and plan="27" and suma_aseg="173000000" then EQUIV_SUMA_ASEG="173000000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="650000" then EQUIV_SUMA_ASEG="700000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="1200000" then EQUIV_SUMA_ASEG="1300000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="2500000" then EQUIV_SUMA_ASEG="2600000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="4000000" then EQUIV_SUMA_ASEG="4250000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="8000000" then EQUIV_SUMA_ASEG="8500000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="20000000" then EQUIV_SUMA_ASEG="22000000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="31500000" then EQUIV_SUMA_ASEG="35000000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="85000000" then EQUIV_SUMA_ASEG="90000000";
+else if año_ini_vig="2024" and plan="27" and suma_aseg="170000000" then EQUIV_SUMA_ASEG="173000000";
+else EQUIV_SUMA_ASEG = suma_aseg;
+EQUIV_COASEGURO=COMPRESS(COASEGURO_F);
+run;
+
+proc sql;
+	create table ulti as select distinct *
+		from equivalencias 
+			group by poliza,polizaraiz,fec_desde
+				having añocierre=max(añocierre);
+quit;
+
+proc sql;
+	create table ulti2 as select distinct *
+		from ulti 
+			group by polizaraiz,fec_desde
+				having poliza=max(poliza);
+quit;
+proc sql;
+	create table pegarnuevo as select distinct a.*,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.NH 
+			else a.NH
+		end 
+	as NHn,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.TABULADOR 
+			else a.TABULADOR
+		end 
+	as TABULADORn,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.EQUIV_DEDU 
+			else a.EQUIV_DEDU
+		end 
+	as EQUIV_DEDUn,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.EQUIV_COASEGURO 
+			else a.EQUIV_COASEGURO
+		end 
+	as EQUIV_COASEGUROn,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.EQUIV_SUMA_ASEG 
+			else a.EQUIV_SUMA_ASEG
+		end 
+	as EQUIV_SUMA_ASEGn,
+		case 
+			when a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde then b.ZONA 
+			else a.ZONA
+		end 
+	as ZONAn
+		from equivalencias a 
+			left join ulti2 b on
+				a.polizaraiz=b.polizaraiz and a.fec_desde=b.fec_desde;
+quit;
+
+data resultado1;
+	set pegarnuevo;
+	drop nh tabulador equiv_dedu equiv_coaseguro equiv_suma_aseg zona;
+run;
+
+data resultado2;
+	set resultado1;
+	rename NHn=NH;
+	rename TABULADORn=TABULADOR;
+	rename EQUIV_DEDUn=EQUIV_DEDU;
+	rename EQUIV_COASEGUROn=EQUIV_COASEGURO;
+	rename EQUIV_SUMA_ASEGn=EQUIV_SUMA_ASEG;
+	rename ZONAn=ZONA;
+run;
+
+data serultado3;
+	set resultado2;
+	drop nhn tabuladorn equiv_dedun equiv_coaseguron equiv_suma_asegn zonan fecha_desde;
+run;
+
+proc sort data=equivalencias;
+	by llavecom;
+run;
+
+proc sort data=serultado3 nodupkey;/*Sin duplicados*/
+	by llavecom;
+run;
+
+
+data tablafinal;
+	merge equivalencias (in=a) serultado3 (in=b);
+	by llavecom;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+data tablafinal2;
+	set tablafinal;
+run;
+
+/*niveles de riesgo e incremento*/
+proc sql;
+	create table flexpluscat as
+		select poliza_ven, poliza_ren, nombre, a_paterno, a_materno, fec_nac, nivel_riesgo, incremento from flp1;
+quit;
+
+proc sql;
+	create table pluscat as
+		select poliza_ven, poliza_ren, nombre, a_paterno, a_materno, fec_nac, nivel_riesgo, incremento from plus1;
+quit;
+
+/*flexplus*/
+data flexpl;
+	set flexpluscat;
+	rfc=compress(substr(nombre,1,3)||substr(a_paterno,1,3)||substr(a_materno,1,3)||fec_nac);
+run;
+
+/*plus*/
+data plus;
+	set pluscat;
+	rfc=compress(substr(nombre,1,3)||substr(a_paterno,1,3)||substr(a_materno,1,3)||fec_nac);
+run;
+
+/*union*/
+data mibase;
+	set tablafinal2;
+	rfc2=cats(substr(nombre,1,3),substr(appaterno,1,3),substr(apmaterno,1,3),fnac||poliza);
+	rfc3=cats(substr(nombre,1,3),substr(appaterno,1,3),substr(apmaterno,1,3),fnac||poliza);
+	llave=compress(añocierre||poliza||polizaraiz||contaseg||id_aseg||fnac||nombre|| appaterno||apmaterno);
+run;
+
+data cat_flexplus;
+	set flexpl;
+	rfc2=compress(rfc||poliza_ven);
+	rfc3=compress(rfc||poliza_ren);
+run;
+
+data cat_plus;
+	set plus;
+	rfc2=compress(rfc||poliza_ven);
+	rfc3=compress(rfc||poliza_ren);
+run;
+
+data plus;
+	set mibase;
+	where plan="02";
+run;
+
+data flexplus;
+	set mibase;
+	where plan="27";
+run;
+
+proc sql;
+	create table flexplus_niv as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc2 then b.nivel_riesgo 
+			else "" 
+		end 
+	as nivel_riesgo
+		from flexplus a
+			left join cat_flexplus b on 
+				a.rfc2=b.rfc2;
+quit;
+
+proc sql;
+	create table flexplus_inc as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc2  then b.incremento 
+			else . 
+		end 
+	as incremento
+		from flexplus a
+			left join cat_flexplus b on 
+				a.rfc2=b.rfc2;
+quit;
+
+proc sql;
+	create table plus_niv as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc2  then b.nivel_riesgo 
+			else "" 
+		end 
+	as nivel_riesgo
+		from plus a
+			left join cat_plus b on 
+				a.rfc2=b.rfc2;
+quit;
+
+proc sql;
+	create table plus_inc as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc2  then b.incremento 
+			else . 
+		end 
+	as incremento
+		from plus a
+			left join cat_plus b on 
+				a.rfc2=b.rfc2;
+quit;
+
+/*nivel de riesgo flex plus */
+proc sort data=mibase;
+	by llave;
+run;
+
+proc sort data=flexplus_niv nodupkey;
+	by llave;
+run;
+
+data final;
+	merge mibase (in=a) flexplus_niv (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*incremento flex plus*/
+proc sort data=final;
+	by llave;
+run;
+
+proc sort data=flexplus_inc nodupkey;
+	by llave;
+run;
+
+data final2;
+	merge final (in=a) flexplus_inc (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*nivel de riesgo plus */
+proc sort data=mibase;
+	by llave;
+run;
+
+proc sort data=plus_niv nodupkey;
+	by llave;
+run;
+
+data finalplus;
+	merge mibase (in=a) plus_niv (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*incremento plus*/
+proc sort data=finalplus;
+	by llave;
+run;
+
+proc sort data=plus_inc nodupkey;
+	by llave;
+run;
+
+data finalplus3;
+	merge finalplus (in=a) plus_inc (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+proc sql;
+	create table gmipricing1 as select
+		a.*, b.*,
+		coalesce(a.nivel_riesgo, b.nivel_riesgo) as nivel_riesgof,
+		coalesce(a.incremento, b.incremento) as incrementof
+	from final2 a
+		full join finalplus3 b on 
+			a.llave=b.llave;
+quit;
+
+/********************************************************************************************************************************************************************/
+proc sql;
+	create table flexplus_niv2 as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc3 then b.nivel_riesgo 
+			else "" 
+		end 
+	as nivel_riesgo
+		from flexplus a
+			left join cat_flexplus b on 
+				a.rfc2=b.rfc3;
+quit;
+
+proc sql;
+	create table flexplus_inc2 as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc3  then b.incremento 
+			else . 
+		end 
+	as incremento
+		from flexplus a
+			left join cat_flexplus b on 
+				a.rfc2=b.rfc3;
+quit;
+
+proc sql;
+	create table plus_niv2 as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc3  then b.nivel_riesgo 
+			else "" 
+		end 
+	as nivel_riesgo
+		from plus a
+			left join cat_plus b on 
+				a.rfc2=b.rfc3;
+quit;
+
+proc sql;
+	create table plus_inc2 as select distinct a.*,
+		case 
+			when a.rfc2=b.rfc3  then b.incremento 
+			else . 
+		end 
+	as incremento
+		from plus a
+			left join cat_plus b on 
+				a.rfc2=b.rfc3;
+quit;
+
+/*nivel de riesgo flex plus */
+proc sort data=mibase;
+	by llave;
+run;
+
+proc sort data=flexplus_niv2 nodupkey;
+	by llave;
+run;
+
+data final2;
+	merge mibase (in=a) flexplus_niv2 (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*incremento flex plus*/
+proc sort data=final2;
+	by llave;
+run;
+
+proc sort data=flexplus_inc2 nodupkey;
+	by llave;
+run;
+
+data final2_3;
+	merge final2 (in=a) flexplus_inc2 (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*nivel de riesgo plus */
+proc sort data=mibase;
+	by llave;
+run;
+
+proc sort data=plus_niv2 nodupkey;
+	by llave;
+run;
+
+data finalplus2;
+	merge mibase (in=a) plus_niv2 (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+/*incremento plus*/
+proc sort data=finalplus2;
+	by llave;
+run;
+
+proc sort data=plus_inc2 nodupkey;
+	by llave;
+run;
+
+data finalplus3_2;
+	merge finalplus2 (in=a) plus_inc2 (in=b);
+	by llave;
+
+	if b then
+		output;
+	else if a then
+		output;
+run;
+
+proc sql;
+	create table gmipricing2 as select
+		a.*, b.*,
+		coalesce(a.nivel_riesgo, b.nivel_riesgo) as nivel_riesgof,
+		coalesce(a.incremento, b.incremento) as incrementof
+	from final2_3 a
+		full join finalplus3_2 b on 
+			a.llave=b.llave;
+quit;
+
+proc sql;
+	create table gmipricingfinal as select
+		a.*, b.*,
+		coalesce(a.nivel_riesgof, b.nivel_riesgof) as nivel_riesgo_aseg,
+		coalesce(a.incrementof, b.incrementof) as incremento_aseg
+	from gmipricing1 a
+		full join gmipricing2 b on 
+			a.llave=b.llave;
+quit;
+
+/*paso 9: ordenamiento de datos*/
+/*tabla con campos ordenados*/
+proc sort data=gmipricingfinal out=ordenaniomes;
+	by  descending añocierre;
+run;
+data tablapreordenada;
+	retain 
+añocierre	poliza	estatus	contaseg	polizaraiz	nh	gbg	nombre	appaterno	apmaterno	sexo	fnac	edad	rangoedad	
+id_aseg	estado	municipio	cp	zona	falt	fant	fec_desde	fec_hasta	min_falt	min_fant	duralt	duraltmin	duraltminagr	
+duraltagr	durant	durantagr	csramo	tcar	plan	nombre_plan	nivel_riesgo_aseg	incremento_aseg	deducible	deducible_f	
+coaseguro	equiv_coaseguro	coaseguro_f	suma_aseg	equiv_suma_aseg	cobertura	tabulador	por_pma	agente	promotor_ag	
+ccosto_ag	nccosto_ag	zona_ag	oficina_ag	cve_terri_ag	cve_zona_ag	cve_ofisub_ag	zona_susc_ag	nomagente_ag	nompromot_ag	
+territorio_ag	canal_ag	zona_flex	dist	ded_cgar	rfc	nom_emp	num_emp	tipo_mov	sistema	forma_pago	nom_for_pago	
+conducto_cobro	con_siniestro	m01	m02	m03	m04	m05	m06	m07	m08	m09	m10	m11	m12	NvoRen	EQUIV_DEDU	
+nombre_nh	nombre_tab	llavecom	anio_vig	prima_x_aseg	suma_prim_pol	total_aseg_poliza gob_f;
+	set ordenaniomes;
+run;
+
+/*paso 7*/
+/*merge para la union de tabla con informacion de mes a base historica*/
+data cons1;
+	set pr.basegmifinal;/* base historica*/
+	id= compress(cats(añocierre,poliza,polizaraiz,contaseg,id_aseg,fnac,nombre, appaterno,apmaterno));
+run;
+
+data cons2;
+	set tablapreordenada; /*nuevo mes cargado*/
+	id= compress(cats(añocierre,poliza,polizaraiz,contaseg,id_aseg,fnac,nombre, appaterno,apmaterno));
+run;
+
+/*Ordenar datos por id*/
+proc sort data=cons1;
+	by id;
+run;
+
+proc sort data=cons2;
+	by id;
+run;
+
+data uni;
+	merge cons1(in=a) cons2(in=b);
+	by id;
+
+	if b then M08=1; /*Agregar el numero de mes que corresponde y colocar 1 de vigencia*/
+		drop id;
+run;
+
+/*Limpieza de campos . */
+data limpieza;
+	set uni;
+
+	if M01 = . then
+		M01 = 0;
+
+	if M02 = . then
+		M02 = 0;
+
+	if M03 = . then
+		M03 = 0;
+
+	if M04 = . then
+		M04 = 0;
+
+	if M05 = . then
+		M05 = 0;
+
+	if M06 = . then
+		M06 = 0;
+
+	if M07 = . then
+		M07 = 0;
+
+	if M08 = . then
+		M08 = 0;
+
+	if M09 = . then
+		M09 = 0;
+
+	if M10 = . then
+		M10 = 0;
+
+	if M11 = . then
+		M11 = 0;
+
+	if M12 = . then
+		M12 = 0;
+run;
+
+/*ordenar de forma ascendente por año*/
+proc sort data=limpieza out=orden;
+	by  descending añocierre;
+run;
+
+/*tabla con informacion ordenada*/
+data nuevaff;
+	set orden;
+	if con_siniestro="" then con_siniestro="No";
+
+run;
+
+data tablaordenadafin;
+	retain 
+añocierre	poliza NvoRen	estatus	contaseg total_aseg_poliza	polizaraiz	nh nombre_nh tabulador nombre_tab	gbg gob_f	nombre	appaterno	apmaterno	sexo	fnac	edad	rangoedad	
+id_aseg	estado	municipio	cp	zona	falt	fant anio_vig fec_desde	fec_hasta	min_falt	min_fant	duralt	duraltmin	duraltminagr	
+duraltagr	durant	durantagr	csramo	tcar	plan	nombre_plan	nivel_riesgo_aseg	incremento_aseg	deducible	deducible_f	EQUIV_DEDU
+coaseguro	equiv_coaseguro	coaseguro_f	suma_aseg	equiv_suma_aseg	cobertura		por_pma prima_x_aseg suma_prim_pol	agente	promotor_ag	
+ccosto_ag	nccosto_ag	zona_ag	oficina_ag	cve_terri_ag	cve_zona_ag	cve_ofisub_ag	zona_susc_ag	nomagente_ag	nompromot_ag	
+territorio_ag	canal_ag	zona_flex	dist	ded_cgar	rfc	nom_emp	num_emp	tipo_mov	sistema	forma_pago	nom_for_pago	
+conducto_cobro	con_siniestro	m01	m02	m03	m04	m05	m06	m07	m08	m09	m10	m11	m12	llavecom;
+	set nuevaff;
+run;
+
+data aseg_ind.bd_gmi_hist(compress=yes);
+	set tablaordenadafin;
+	drop rfc2;
+	drop rfc3;
+	drop llave;
+	drop nivel_riesgo;
+	drop incremento;
+	drop nivel_riesgoF;
+	drop incrementoF;
+    drop id;
+	drop año_ini_vig;
+	drop llavefinalpr;
+
+run;
+/*
+data tablaordenada;
+	retain añocierre poliza estatus  contaseg polizaraiz nh gbg nombre	appaterno	apmaterno sexo	fnac 
+		edad rangoedad  id_aseg estado	municipio cp zona falt fant fec_desde
+		fec_hasta min_falt min_fant duralt duraltmin duraltminagr	duraltagr	durant durantagr csramo
+		tcar plan nombre_plan nivel_riesgo_aseg incremento_aseg deducible
+		equiv_dedu deducible_f	coaseguro	equiv_coaseguro coaseguro_f suma_aseg	equiv_suma_aseg cobertura 
+		tabulador por_pma		 
+		agente	promotor_ag	ccosto_ag	nccosto_ag	zona_ag	
+		oficina_ag	cve_terri_ag	cve_zona_ag	cve_ofisub_ag	zona_susc_ag	nomagente_ag	
+		nompromot_ag	territorio_ag	canal_ag zona_flex dist	ded_cgar rfc	nom_emp	num_emp	tipo_mov			
+		sistema	forma_pago	nom_for_pago	conducto_cobro	con_siniestro m01	m02	m03	m04	m05	m06	m07	m08	m09	m10	m11	m12;
+	set nuevaff;
+run;
+
+
+data aseg_ind.bd_gmi_hist(compress=yes);
+	set tablaordenada;
+	drop rfc2;
+	drop rfc3;
+	drop llave;
+	drop nivel_riesgo;
+	drop incremento;
+	drop nivel_riesgoF;
+	drop incrementoF;
+    drop id;
+	drop año_ini_vig;
+run;
+/*
+data target.pricing_plus(compress=yes);
+set plus;
+run;
+
+data target.pricing_flexplus(compress=yes);
+set flexpl;
+run;*/
